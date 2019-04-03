@@ -80,4 +80,41 @@ describe("/web", function () {
 		assert.equal(response.statusCode, 400);
 		assert.equal(response.text, 'Remote page not found');
 	});
+	
+	
+	// Note: This doesn't test subsequent requests during translation
+	it("should forward the Accept-Language header in the initial request", async function () {
+		var url = testURL + 'single';
+		var response = await request()
+			.post('/web')
+			.set('Content-Type', 'text/plain')
+			.set('Accept-Language', 'fr')
+			.send(url);
+		assert.equal(response.statusCode, 200);
+		var json = response.body;
+		
+		assert.lengthOf(json, 1);
+		assert.equal(json[0].itemType, 'journalArticle');
+		assert.equal(json[0].title, 'Titre');
+	});
+	
+	it("should reject non-HTML/XML upstream content types", async function () {
+		var url = testURL + 'invalidContentType';
+		var response = await request()
+			.post('/web')
+			.set('Content-Type', 'text/plain')
+			.send(url);
+		assert.equal(response.statusCode, 400);
+		assert.equal(response.text, "The remote document is not in a supported format");
+	});
+	
+	it("should reject missing upstream Content-Type header", async function () {
+		var url = testURL + 'missingContentType';
+		var response = await request()
+			.post('/web')
+			.set('Content-Type', 'text/plain')
+			.send(url);
+		assert.equal(response.statusCode, 400);
+		assert.equal(response.text, "The remote document is not in a supported format");
+	});
 });

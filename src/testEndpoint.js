@@ -4,11 +4,12 @@ var TestEndpoint = module.exports = {
 	},
 	
 	handleSingle: async function (ctx, next) {
+		var title = ctx.headers['accept-language'] == 'fr' ? 'Titre' : 'Title';
 		ctx.response.body = `<html>
 			<head>
-				<title>Page Title</title>
+				<title>${title}</title>
 				<link rel="schema.DC" href="http://purl.org/dc/elements/1.1/" />
-				<meta name="citation_title" content="Title"/>
+				<meta name="citation_title" content="${title}"/>
 			</head>
 			<body>Body</body>
 		</html>`;
@@ -24,5 +25,14 @@ var TestEndpoint = module.exports = {
 	
 	handleRedirect: async function (ctx, next) {
 		ctx.redirect('/test/single');
+	},
+	
+	invalidContentType: async function (ctx, next) {
+		ctx.set('Content-Type', 'image/jpeg');
+		ctx.response.body = '';
+	},
+	
+	missingContentType: async function (ctx, next) {
+		ctx.response.body = null;
 	}
 };
