@@ -25,10 +25,12 @@
 
 const config = require('config');
 const urlLib = require('url');
+const { CONTENT_TYPES } = require('./formats');
 const Translate = require('./translation/translate');
 const TLDS = Zotero.require('./translation/tlds');
 const HTTP = require('./http');
 const Translators = require('./translators');
+const ImportEndpoint = require('./importEndpoint');
 const SearchEndpoint = require('./searchEndpoint');
 const { jar: cookieJar } = require('request');
 
@@ -76,13 +78,26 @@ WebSession.prototype.handleURL = async function () {
 		let blacklisted = config.get("blacklistedDomains")
 			.some(x => x && new RegExp(x).test(domain));
 		if (blacklisted) {
-			let doi = Zotero.Utilities.cleanDOI(url);
+			let doi = this.cleanDOIFromURL(url);
 			if (!doi) {
 				this.ctx.throw(500, "An error occurred retrieving the document\n");
 			}
 			await SearchEndpoint.handleIdentifier(this.ctx, { DOI: doi });
 			return;
 		}
+	}
+	
+	var responseTypeMap = new Map([
+		['html', 'document'],
+		['application/xhtml+xml', 'document'],
+		['text/plain', 'text']
+	]);
+	// Force all import content types to text
+	for (let type in CONTENT_TYPES) {
+		let contentType = CONTENT_TYPES[type];
+		if (contentType == 'text/html') continue;
+		if (responseTypeMap.has(contentType)) continue;
+		responseTypeMap.set(contentType, 'text');
 	}
 	
 	var urlsToTry = config.get('deproxifyURLs') ? this.deproxifyURL(url) : [url];
@@ -153,19 +168,28 @@ WebSession.prototype.handleURL = async function () {
 		translate.setRequestHeaders(headers);
 		
 		try {
-			await HTTP.processDocuments(
-				[url],
-				(doc) => {
-					translate.setDocument(doc);
-					// This could be optimized by only running detect on secondary translators
-					// if the first fails, but for now just run detect on all
-					return translate.getTranslators(true);
-				},
+			let req = await Zotero.HTTP.request(
+				"GET",
+				url,
 				{
+					responseTypeMap,
 					cookieSandbox: this._cookieSandbox,
 					headers
 				}
 			);
+			if (req.type === 'document') {
+				translate.setDocument(req.response);
+				// This could be optimized by only running detect on secondary translators
+				// if the first fails, but for now just run detect on all
+				translate.getTranslators(true);
+			}
+			else {
+				Zotero.debug(`Handling ${req.headers['content-type']} as import`);
+				this.ctx.request.body = req.response;
+				await ImportEndpoint.handle(this.ctx);
+				return;
+			}
+			
 			return promise;
 		}
 		catch (e) {
@@ -175,10 +199,9 @@ WebSession.prototype.handleURL = async function () {
 				this.ctx.throw(400, "Remote page not found");
 			}
 			
-			//Parse URL up to '?' for DOI
-			let doi = Zotero.Utilities.cleanDOI(decodeURIComponent(url).match(/[^\?]+/)[0]);
+			let doi = this.cleanDOIFromURL(url);
 			if (doi) {
-				Zotero.debug("Found DOI in URL -- continuing with " + doi);
+				Zotero.debug(`Error translating page -- continuing with DOI ${doi} from URL`);
 				await SearchEndpoint.handleIdentifier(this.ctx, { DOI: doi });
 				return;
 			}
@@ -239,6 +262,16 @@ WebSession.prototype.translate = async function (translate, translators) {
 	
 	//this._cookieSandbox.clearTimeout();
 	
+	// Check for DOI in URL if no results
+	if (!items.length) {
+		let doi = this.cleanDOIFromURL(translate.location);
+		if (doi) {
+			Zotero.debug(`No results -- continuing with DOI ${doi} from URL`);
+			await SearchEndpoint.handleIdentifier(this.ctx, { DOI: doi });
+			return;
+		}
+	}
+	
 	var json = [];
 	for (let item of items) {
 		json.push(...Zotero.Utilities.itemToAPIJSON(item));
@@ -285,6 +318,14 @@ WebSession.prototype.select = function (url, translate, items, callback, promise
 			newItems[i] = items[i];
 		}
 		items = newItems;
+	}
+	
+	// If translator returns objects with 'title' and 'checked' properties (e.g., PubMed),
+	// extract title
+	for (let i in items) {
+		if (items[i].title) {
+			items[i] = items[i].title;
+		}
 	}
 	
 	this.id = Zotero.Utilities.randomString(15);
@@ -416,4 +457,14 @@ WebSession.prototype.deproxifyURL = function (url) {
 	urls.sort((a, b) => b.length - a.length);
 	urls.push(urls.shift());
 	return urls;
+};
+
+
+WebSession.prototype.cleanDOIFromURL = function (url) {
+	let doi = Zotero.Utilities.cleanDOI(decodeURIComponent(url));
+	if (doi) {
+		// Stop at query string or ampersand
+		doi = doi.replace(/[?&].*/, '');
+	}
+	return doi || null;
 };
